@@ -3,6 +3,7 @@
 This module intentionally contains no AI, rule-checking, or audit-log logic.
 """
 
+from datetime import datetime
 from pathlib import Path
 from html import escape
 
@@ -11,7 +12,7 @@ import streamlit as st
 
 from src.checker import validate_case
 from src.ai_engine import GeminiDiagnosisError, generate_ai_diagnosis
-from src.logger import AUDIT_COLUMNS, get_recent_audit_entries, record_engineer_decision
+from src.logger import AUDIT_COLUMNS, get_audit_log_download, get_recent_audit_entries, record_engineer_decision
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +20,7 @@ CASE_FILE_LOCATIONS = (
     PROJECT_ROOT / "data" / "cases.csv",
     PROJECT_ROOT / "data" / "data" / "cases.csv",
 )
+AUDIT_LOG_PATH = PROJECT_ROOT / "data" / "audit_log.csv"
 
 
 def apply_theme() -> None:
@@ -95,32 +97,169 @@ def _metric_card(label: str, value: str) -> None:
     )
 
 
+def _load_audit_entries() -> pd.DataFrame:
+    """Read audit records safely so an absent or malformed file cannot break the dashboard."""
+    if not AUDIT_LOG_PATH.exists() or AUDIT_LOG_PATH.stat().st_size == 0:
+        return pd.DataFrame(columns=AUDIT_COLUMNS)
+    try:
+        return pd.read_csv(AUDIT_LOG_PATH).dropna(how="all")
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError):
+        return pd.DataFrame(columns=AUDIT_COLUMNS)
+
+
+def _case_filters(cases: pd.DataFrame) -> pd.DataFrame:
+    """Render sidebar filters and return the matching case records."""
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Dashboard Filters")
+    filtered_cases = cases.copy()
+    filters = {
+        "severity": st.sidebar.multiselect("Severity", sorted(cases.get("severity", pd.Series(dtype=str)).dropna().astype(str).unique())),
+        "concept_tag": st.sidebar.multiselect("Concept Tag", sorted(cases.get("concept_tag", pd.Series(dtype=str)).dropna().astype(str).unique())),
+        "osi_layer": st.sidebar.multiselect("OSI Layer", sorted(cases.get("osi_layer", pd.Series(dtype=str)).dropna().astype(str).unique())),
+    }
+    for column, selected_values in filters.items():
+        if selected_values and column in filtered_cases.columns:
+            filtered_cases = filtered_cases[filtered_cases[column].astype(str).isin(selected_values)]
+    return filtered_cases
+
+
+def _matching_audit_entries(audit_entries: pd.DataFrame, filtered_cases: pd.DataFrame) -> pd.DataFrame:
+    """Limit review metrics to cases matching the active dashboard filters."""
+    if audit_entries.empty or "case_id" not in audit_entries.columns or "case_id" not in filtered_cases.columns:
+        return audit_entries
+    matching_ids = set(filtered_cases["case_id"].astype(str))
+    return audit_entries[audit_entries["case_id"].astype(str).isin(matching_ids)]
+
+
+def _style_plotly_figure(figure) -> None:
+    """Apply the dashboard's dark Cisco-inspired palette to a Plotly figure."""
+    figure.update_layout(
+        paper_bgcolor="#071525",
+        plot_bgcolor="#071525",
+        font={"color": "#dcecff"},
+        margin={"l": 20, "r": 20, "t": 45, "b": 20},
+        legend={"font": {"color": "#dcecff"}},
+    )
+
+
+def _render_chart(title: str, figure, empty_message: str) -> None:
+    """Show one Plotly chart or a clear empty-state message in its place."""
+    st.subheader(title)
+    if figure is None:
+        st.info(empty_message)
+        return
+    _style_plotly_figure(figure)
+    st.plotly_chart(figure, use_container_width=True)
+
+
+def _build_dashboard_charts(cases: pd.DataFrame, audit_entries: pd.DataFrame) -> dict:
+    """Create the five requested Plotly analytics figures from filtered source data."""
+    try:
+        import plotly.express as px
+    except ImportError:
+        return {"plotly_unavailable": None}
+
+    charts: dict = {}
+    if "concept_tag" in cases.columns and not cases.empty:
+        concept_counts = cases["concept_tag"].replace("", pd.NA).dropna().value_counts().reset_index()
+        concept_counts.columns = ["Concept Tag", "Cases"]
+        charts["issue"] = px.pie(concept_counts, names="Concept Tag", values="Cases", color_discrete_sequence=px.colors.sequential.Blues_r)
+    else:
+        charts["issue"] = None
+
+    if "severity" in cases.columns and not cases.empty:
+        severity_counts = cases["severity"].replace("", pd.NA).dropna().value_counts().reset_index()
+        severity_counts.columns = ["Severity", "Cases"]
+        charts["severity"] = px.bar(severity_counts, x="Severity", y="Cases", color="Severity", color_discrete_sequence=["#f1566c", "#f4a340", "#35bd7a"])
+    else:
+        charts["severity"] = None
+
+    if "osi_layer" in cases.columns and not cases.empty:
+        osi_counts = cases["osi_layer"].replace("", pd.NA).dropna().value_counts().reset_index()
+        osi_counts.columns = ["OSI Layer", "Cases"]
+        charts["osi"] = px.bar(osi_counts, x="Cases", y="OSI Layer", orientation="h", color_discrete_sequence=["#35a7ff"])
+    else:
+        charts["osi"] = None
+
+    if "engineer_decision" in audit_entries.columns and not audit_entries.empty:
+        decision_counts = audit_entries["engineer_decision"].replace("", pd.NA).dropna().value_counts().reset_index()
+        decision_counts.columns = ["Decision", "Reviews"]
+        charts["decisions"] = px.pie(decision_counts, names="Decision", values="Reviews", hole=0.55, color_discrete_sequence=["#35bd7a", "#f4a340", "#f1566c"])
+    else:
+        charts["decisions"] = None
+
+    confidence = pd.to_numeric(audit_entries.get("confidence", pd.Series(dtype=float)), errors="coerce").dropna()
+    charts["confidence"] = px.histogram(confidence, x="confidence", nbins=10, color_discrete_sequence=["#35a7ff"]) if not confidence.empty else None
+    return charts
+
+
+def _render_recent_activity(audit_entries: pd.DataFrame) -> None:
+    """Display the latest ten audit events with the required dashboard columns."""
+    st.subheader("Recent Activity")
+    if audit_entries.empty:
+        st.info("No engineer reviews available yet.")
+        return
+    display_entries = audit_entries.copy()
+    timestamp_values = display_entries["timestamp"] if "timestamp" in display_entries.columns else pd.Series(pd.NaT, index=display_entries.index)
+    display_entries["_sort_time"] = pd.to_datetime(timestamp_values, errors="coerce")
+    display_entries = display_entries.sort_values("_sort_time", ascending=False).head(10)
+    display_entries = display_entries.rename(columns={
+        "timestamp": "Timestamp", "case_id": "Case ID", "ai_root_cause": "Root Cause",
+        "engineer_decision": "Decision", "confidence": "Confidence",
+    })
+    for column in ["Timestamp", "Case ID", "Root Cause", "Decision", "Confidence"]:
+        if column not in display_entries.columns:
+            display_entries[column] = ""
+    st.dataframe(display_entries[["Timestamp", "Case ID", "Root Cause", "Decision", "Confidence"]], use_container_width=True, hide_index=True)
+
+
 def render_dashboard_page(cases: pd.DataFrame) -> None:
-    """Render the read-only dashboard overview and placeholder charts."""
-    total_cases = len(cases) if not cases.empty else 30
-    st.title("Network Operations Dashboard")
-    st.markdown('<p class="subtitle">Cisco-inspired troubleshooting overview</p>', unsafe_allow_html=True)
+    """Render filtered KPI, chart, activity, and export analytics for NetSage AI."""
+    st.title("🌐 NetSage AI Dashboard")
+    st.markdown('<p class="subtitle">AI-Assisted Cisco Network Diagnostic Platform</p>', unsafe_allow_html=True)
+    st.caption(datetime.now().astimezone().strftime("%A, %d %B %Y · %I:%M %p %Z"))
+
+    filtered_cases = _case_filters(cases) if not cases.empty else cases
+    audit_entries = _matching_audit_entries(_load_audit_entries(), filtered_cases)
+    reviewed_cases = len(audit_entries)
+    approved_cases = int((audit_entries.get("engineer_decision", pd.Series(dtype=str)) == "Approve").sum())
+    approval_rate = (approved_cases / reviewed_cases * 100) if reviewed_cases else 0
 
     metric_columns = st.columns(4)
     metrics = [
-        ("Total Cases", str(total_cases)),
-        ("Cases Reviewed", "0"),
-        ("AI Accuracy", "0%"),
-        ("Human Approval Rate", "0%"),
+        ("Total Cases", str(len(filtered_cases))),
+        ("AI Diagnoses Generated", str(reviewed_cases)),
+        ("Cases Reviewed", str(reviewed_cases)),
+        ("Human Approval Rate", f"{approval_rate:.0f}%"),
     ]
     for column, (label, value) in zip(metric_columns, metrics):
         with column:
             _metric_card(label, value)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    chart_columns = st.columns(2)
-    # Static placeholder data keeps the frontend complete before analytics are added.
-    with chart_columns[0]:
-        st.subheader("Issue Distribution")
-        st.bar_chart(pd.DataFrame({"Cases": [0, 0, 0, 0]}, index=["Routing", "Switching", "DNS", "Security"]))
-    with chart_columns[1]:
-        st.subheader("Severity Distribution")
-        st.bar_chart(pd.DataFrame({"Cases": [0, 0, 0, 0]}, index=["Critical", "High", "Medium", "Low"]))
+    charts = _build_dashboard_charts(filtered_cases, audit_entries)
+    if "plotly_unavailable" in charts:
+        st.error("Plotly is not installed. Install the project requirements to view dashboard charts.")
+    else:
+        first_row = st.columns(2)
+        with first_row[0]:
+            _render_chart("Issue Distribution", charts["issue"], "No issue distribution data available.")
+        with first_row[1]:
+            _render_chart("Severity Distribution", charts["severity"], "No severity distribution data available.")
+        second_row = st.columns(2)
+        with second_row[0]:
+            _render_chart("OSI Layer Distribution", charts["osi"], "No OSI layer data available.")
+        with second_row[1]:
+            _render_chart("Engineer Decisions", charts["decisions"], "No engineer decision data available.")
+        _render_chart("AI Confidence", charts["confidence"], "No confidence data available.")
+
+    _render_recent_activity(audit_entries)
+    st.download_button(
+        "⬇ Download Audit Log",
+        data=AUDIT_LOG_PATH.read_bytes() if AUDIT_LOG_PATH.exists() else pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(index=False).encode(),
+        file_name="audit_log.csv",
+        mime="text/csv",
+        key="dashboard_download_audit_log",
+    )
 
 
 def _detail_card(label: str, value: str) -> None:
@@ -267,35 +406,59 @@ def _render_engineer_review(case_id: str, diagnosis: dict) -> None:
     """Render and persist the human engineer's review of an AI diagnosis."""
     st.markdown("---")
     st.subheader("👨‍💻 Engineer Review")
-    decision_key = f"engineer_decision_{case_id}"
-    decision_columns = st.columns(3)
-
-    # These buttons select a decision; saving happens only through Submit Decision.
-    with decision_columns[0]:
-        if st.button("✅ Approve", key=f"approve_{case_id}", use_container_width=True):
-            st.session_state[decision_key] = "Approve"
-    with decision_columns[1]:
-        if st.button("✏️ Edit Recommendation", key=f"edit_{case_id}", use_container_width=True):
-            st.session_state[decision_key] = "Edit Recommendation"
-    with decision_columns[2]:
-        if st.button("❌ Reject", key=f"reject_{case_id}", use_container_width=True):
-            st.session_state[decision_key] = "Reject"
-
-    selected_decision = st.session_state.get(decision_key)
-    if selected_decision:
-        st.caption(f"Selected decision: {selected_decision}")
-
-    engineer_notes = st.text_area("Engineer Notes", key=f"engineer_notes_{case_id}")
+    decision_options = {
+        "✅ Approve": "Approve",
+        "✏️ Edit Recommendation": "Edit Recommendation",
+        "❌ Reject": "Reject",
+    }
+    decision_label = st.radio(
+        "Engineer Decision",
+        options=list(decision_options),
+        index=None,
+        key=f"engineer_decision_{case_id}",
+    )
+    selected_decision = decision_options.get(decision_label)
+    engineer_notes = st.text_area("Engineer Notes", height=150, key=f"engineer_notes_{case_id}")
     if st.button("Submit Decision", type="primary", key=f"submit_review_{case_id}"):
         if not selected_decision:
             st.warning("Select Approve, Edit Recommendation, or Reject before submitting.")
         else:
             record_engineer_decision(case_id, diagnosis, selected_decision, engineer_notes)
-            st.success("✅ Decision recorded successfully.")
+            st.success("✅ Decision saved successfully.")
 
+    _render_recent_audit_entries()
+
+
+def _render_recent_audit_entries() -> None:
+    """Display the ten latest reviews and a download link for the full audit CSV."""
     st.markdown("#### Recent Audit Entries")
     recent_entries = get_recent_audit_entries()
-    st.dataframe(recent_entries[AUDIT_COLUMNS], use_container_width=True, hide_index=True)
+    if recent_entries.empty:
+        st.info("No engineer reviews available yet.")
+    else:
+        display_entries = recent_entries[AUDIT_COLUMNS].rename(
+            columns={
+                "timestamp": "Timestamp",
+                "case_id": "Case ID",
+                "ai_root_cause": "Root Cause",
+                "engineer_decision": "Decision",
+                "confidence": "Confidence",
+                "engineer_notes": "Notes",
+            }
+        )
+        st.dataframe(
+            display_entries[["Timestamp", "Case ID", "Root Cause", "Decision", "Confidence", "Notes"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.download_button(
+        "⬇ Download Audit Log",
+        data=get_audit_log_download(),
+        file_name="audit_log.csv",
+        mime="text/csv",
+        key="download_audit_log",
+    )
 
 
 def render_ai_diagnosis_page(cases: pd.DataFrame) -> None:
@@ -340,14 +503,10 @@ def render_placeholder_page() -> None:
 
 
 def render_audit_log_page() -> None:
-    """Render a non-persistent audit log placeholder table."""
+    """Render the recorded engineer-review audit history."""
     st.title("Audit Log")
-    st.markdown('<p class="subtitle">Decision history will appear here once audit logging is implemented.</p>', unsafe_allow_html=True)
-    st.dataframe(
-        pd.DataFrame(columns=["Timestamp", "Case ID", "AI Diagnosis", "Engineer Decision", "Notes"]),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.markdown('<p class="subtitle">Recorded engineer decisions and AI diagnosis reviews.</p>', unsafe_allow_html=True)
+    _render_recent_audit_entries()
 
 
 def render_about_page() -> None:

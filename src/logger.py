@@ -20,24 +20,26 @@ AUDIT_COLUMNS = [
 ]
 
 
-def _audit_dataframe() -> pd.DataFrame:
-    """Read the audit CSV and add required columns without discarding prior records."""
+def ensure_audit_log() -> None:
+    """Create the audit CSV with its required header when it does not yet exist."""
+    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not AUDIT_LOG_PATH.exists() or AUDIT_LOG_PATH.stat().st_size == 0:
-        return pd.DataFrame(columns=AUDIT_COLUMNS)
+        pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(AUDIT_LOG_PATH, index=False)
+        return
 
-    try:
-        audit_entries = pd.read_csv(AUDIT_LOG_PATH)
-    except pd.errors.EmptyDataError:
-        audit_entries = pd.DataFrame(columns=AUDIT_COLUMNS)
+    existing_entries = pd.read_csv(AUDIT_LOG_PATH)
+    if existing_entries.empty and list(existing_entries.columns) != AUDIT_COLUMNS:
+        # Header-only placeholder files contain no reviews and may safely adopt this schema.
+        pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(AUDIT_LOG_PATH, index=False)
+    elif not set(AUDIT_COLUMNS).issubset(existing_entries.columns):
+        raise ValueError("The existing audit log has an incompatible schema and cannot be appended safely.")
 
-    # A header-only legacy placeholder contains no decisions and can adopt the new schema.
-    if audit_entries.empty:
-        return pd.DataFrame(columns=AUDIT_COLUMNS)
 
-    for column in AUDIT_COLUMNS:
-        if column not in audit_entries.columns:
-            audit_entries[column] = pd.NA
-    return audit_entries
+def _audit_dataframe() -> pd.DataFrame:
+    """Read audit records without changing any already stored decision rows."""
+    ensure_audit_log()
+    audit_entries = pd.read_csv(AUDIT_LOG_PATH)
+    return audit_entries.dropna(how="all")
 
 
 def _final_status(decision: str) -> str:
@@ -56,8 +58,7 @@ def record_engineer_decision(
     engineer_notes: str,
 ) -> None:
     """Append one engineer decision while retaining all existing audit-log records."""
-    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    existing_entries = _audit_dataframe()
+    ensure_audit_log()
     new_entry = pd.DataFrame(
         [{
             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -69,11 +70,17 @@ def record_engineer_decision(
             "final_status": _final_status(engineer_decision),
         }]
     )
-    combined_entries = pd.concat([existing_entries, new_entry], ignore_index=True)
-    combined_entries.to_csv(AUDIT_LOG_PATH, index=False)
+    # Append mode protects all previous records from replacement on repeated submissions.
+    new_entry.to_csv(AUDIT_LOG_PATH, mode="a", header=False, index=False)
 
 
 def get_recent_audit_entries(limit: int = 10) -> pd.DataFrame:
     """Return the most recent audit rows for display in the Streamlit interface."""
     audit_entries = _audit_dataframe()
     return audit_entries.tail(limit).iloc[::-1]
+
+
+def get_audit_log_download() -> bytes:
+    """Return the complete audit CSV as downloadable UTF-8 bytes."""
+    ensure_audit_log()
+    return AUDIT_LOG_PATH.read_bytes()
