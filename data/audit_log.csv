@@ -1,0 +1,15 @@
+timestamp,case_id,ai_root_cause,confidence,engineer_decision,engineer_notes,final_status
+2026-08-23T16:07:04+05:30,NET-004,OSPF Hello timer mismatch on interface GigabitEthernet0/0 between R1 and R2,1,Approve,"now the case is solved
+",APPROVED
+2026-08-23T16:53:36+05:30,NET-001,Sub-interface GigabitEthernet0/0.10 acting as the default gateway for VLAN 10 is administratively shut down.,0.98,Approve,solved,APPROVED
+2026-08-23T16:54:06+05:30,NET-002,DHCP pool LAN_POOL exhaustion on Router R1,0.98,Approve,"done
+",APPROVED
+,,,,,,
+2026-08-23T17:06:37+05:30,NET-030,CDP is disabled globally on the device via the 'no cdp run' configuration command.,0.99,Approve,Diagnosis verified. Recommended fix approved for implementation.,APPROVED
+2026-08-23T17:08:36+05:30,NET-023,Static IP address collision where Host A and Host B are both configured with 192.168.1.100 on the same Layer 2 broadcast domain.,0.99,Approve,Diagnosis verified. Recommended fix approved for implementation.,APPROVED
+2026-08-23T17:12:45+05:30,NET-026,Port security violation on interface FastEthernet0/10 caused by detecting an additional MAC address beyond the configured maximum limit of  1 MAC address.,0.95,Reject,Further troubleshooting required before applying changes.,REJECTED
+2026-08-23T17:15:27+05:30,NET-005,Extended access list 101 explicitly denies TCP traffic from the Sales subnet (192.168.10.0/24) to the web server (10.0.0.10) on HTTP port 80.,0.98,Approve,Diagnosis verified. Recommended fix approved for implementation.,APPROVED
+2026-08-23T17:17:01+05:30,NET-025,"Uplink interface GigabitEthernet0/1 is missing the 'ip arp inspection trust' configuration, causing Dynamic ARP Inspection (DAI) to drop legitimate ARP traffic received from the uplink port.",0.98,Edit Recommendation,Recommendation updated after manual review.,PENDING_RECOMMENDATION_EDIT
+2026-08-23T17:18:56+05:30,NET-010,Management interface Vlan1 is administratively down (shutdown).,0.99,Approve, Diagnosis verified. Recommended fix approved for implementation.,APPROVED
+,,,,,,
+2026-08-23T17:20:36+05:30,NET-020,Misconfigured Default Gateway outside host IP subnet boundary.,0.98,Edit Recommendation,Recommendation updated after manual review.,PENDING_RECOMMENDATION_EDIT
