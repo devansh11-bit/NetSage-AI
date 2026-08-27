@@ -201,7 +201,12 @@ def _render_recent_activity(audit_entries: pd.DataFrame) -> None:
         return
     display_entries = audit_entries.copy()
     timestamp_values = display_entries["timestamp"] if "timestamp" in display_entries.columns else pd.Series(pd.NaT, index=display_entries.index)
-    display_entries["_sort_time"] = pd.to_datetime(timestamp_values, errors="coerce")
+    display_entries["_sort_time"] = pd.to_datetime(
+    timestamp_values,
+    errors="coerce",
+    format="mixed",
+    utc=True
+)
     display_entries = display_entries.sort_values("_sort_time", ascending=False).head(10)
     display_entries = display_entries.rename(columns={
         "timestamp": "Timestamp", "case_id": "Case ID", "ai_root_cause": "Root Cause",
