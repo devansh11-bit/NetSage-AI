@@ -27,7 +27,13 @@ def ensure_audit_log() -> None:
         pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(AUDIT_LOG_PATH, index=False)
         return
 
-    existing_entries = pd.read_csv(AUDIT_LOG_PATH)
+    try:
+        existing_entries = pd.read_csv(AUDIT_LOG_PATH)
+    except pd.errors.EmptyDataError:
+        pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(AUDIT_LOG_PATH, index=False)
+        return
+    except (OSError, pd.errors.ParserError) as error:
+        raise ValueError("The existing audit log cannot be read safely.") from error
     if existing_entries.empty and list(existing_entries.columns) != AUDIT_COLUMNS:
         # Header-only placeholder files contain no reviews and may safely adopt this schema.
         pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(AUDIT_LOG_PATH, index=False)
@@ -76,11 +82,20 @@ def record_engineer_decision(
 
 def get_recent_audit_entries(limit: int = 10) -> pd.DataFrame:
     """Return the most recent audit rows for display in the Streamlit interface."""
-    audit_entries = _audit_dataframe()
+    try:
+        audit_entries = _audit_dataframe()
+    except ValueError:
+        return pd.DataFrame(columns=AUDIT_COLUMNS)
     return audit_entries.tail(limit).iloc[::-1]
 
 
 def get_audit_log_download() -> bytes:
     """Return the complete audit CSV as downloadable UTF-8 bytes."""
-    ensure_audit_log()
-    return AUDIT_LOG_PATH.read_bytes()
+    try:
+        ensure_audit_log()
+    except ValueError:
+        return pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(index=False).encode("utf-8")
+    try:
+        return AUDIT_LOG_PATH.read_bytes()
+    except OSError:
+        return pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(index=False).encode("utf-8")

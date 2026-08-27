@@ -70,7 +70,7 @@ def load_cases() -> pd.DataFrame:
         if case_file.exists():
             try:
                 return pd.read_csv(case_file).fillna("")
-            except (OSError, pd.errors.ParserError):
+            except (OSError, UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError):
                 return pd.DataFrame()
     return pd.DataFrame()
 
@@ -103,7 +103,7 @@ def _load_audit_entries() -> pd.DataFrame:
         return pd.DataFrame(columns=AUDIT_COLUMNS)
     try:
         return pd.read_csv(AUDIT_LOG_PATH).dropna(how="all")
-    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError):
+    except (OSError, UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError):
         return pd.DataFrame(columns=AUDIT_COLUMNS)
 
 
@@ -255,7 +255,7 @@ def render_dashboard_page(cases: pd.DataFrame) -> None:
     _render_recent_activity(audit_entries)
     st.download_button(
         "⬇ Download Audit Log",
-        data=AUDIT_LOG_PATH.read_bytes() if AUDIT_LOG_PATH.exists() else pd.DataFrame(columns=AUDIT_COLUMNS).to_csv(index=False).encode(),
+        data=get_audit_log_download(),
         file_name="audit_log.csv",
         mime="text/csv",
         key="dashboard_download_audit_log",
@@ -423,8 +423,12 @@ def _render_engineer_review(case_id: str, diagnosis: dict) -> None:
         if not selected_decision:
             st.warning("Select Approve, Edit Recommendation, or Reject before submitting.")
         else:
-            record_engineer_decision(case_id, diagnosis, selected_decision, engineer_notes)
-            st.success("✅ Decision saved successfully.")
+            try:
+                record_engineer_decision(case_id, diagnosis, selected_decision, engineer_notes)
+            except (OSError, UnicodeError, ValueError, pd.errors.ParserError):
+                st.error("The decision could not be saved. Please verify the audit log file and try again.")
+            else:
+                st.success("✅ Decision saved successfully.")
 
     _render_recent_audit_entries()
 
