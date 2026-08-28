@@ -1,6 +1,13 @@
 # 🌐 NetSage AI
 ### AI-Assisted Cisco Network Diagnostic Platform
 
+## Demo Video
+
+
+https://github.com/user-attachments/assets/4e8d4428-b16d-4cea-9865-90d853bca42b
+
+
+
 ## 📌 Overview
 
 NetSage AI is an intelligent network troubleshooting platform developed as part of the Cisco Virtual Internship. It combines deterministic rule-based validation with Google Gemini AI to assist network engineers in diagnosing Cisco network issues quickly and accurately.
